@@ -1,0 +1,212 @@
+# Retail Price Optimization
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings 
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+pio.templates.default = "plotly_white"
+warnings.filterwarnings('ignore')
+
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestRegressor
+
+import eli5
+from eli5.sklearn import PermutationImportance
+import shap
+
+# Loading Data
+
+df = pd.read_csv('retail_price.csv')
+df.head(10).T
+
+df.info()
+
+print(f"Columns: {df.shape[1]}\nSamples: {df.shape[0]}")
+
+any(df.isna().sum() > 0)
+
+df.describe().T
+
+# Análisis exploratorio de datos
+
+fig = px.histogram(df,
+                   x='total_price',
+                   nbins=20,
+                   title='Distribution of Total Price')
+fig.show()
+
+fig = px.box(df,
+             y='unit_price',
+             title='Distribution of Unit Price')
+fig.show()
+
+fig = px.scatter(df,
+                 x='qty',
+                 y='total_price', trendline='ols',
+                 title='Quantity vs Total Price')
+fig.show()
+
+fig = px.bar(df, x='product_category_name',
+             y='total_price', title='Total Price by Product Category')
+fig.show()
+
+fig = px.bar(df, x='product_category_name',
+             y='unit_price', title='Unit Price by Product Category')
+fig.show()
+
+fig = px.box(df, x='weekday', 
+             y='total_price', 
+             title='Box Plot of Total Price by number of Weekdays in a Month')
+fig.show()
+
+fig = px.box(df, x='weekend', 
+             y='total_price', 
+             title='Box Plot of Total Price by number of Weekend days in a Month')
+fig.show()
+
+### Comparativo vs los precios del competidor
+
+El análisis de la competencia es bastante esencial. Por lo tanto, comparamos los precios unitarios y de envío de cada producto con los de 3 competidores diferentes.
+*Para ello simplemente calculamos la diferencia entre cada par
+
+### Precio
+
+df['comp1_diff'] = df['unit_price'] - df['comp_1']
+df['comp2_diff'] = df['unit_price'] - df['comp_2']
+df['comp3_diff'] = df['unit_price'] - df['comp_3']
+
+for i in range(1,4):
+    comp = f"comp{i}_diff"
+    fig = px.bar(x=df['product_category_name'],
+                 y=df[comp],
+                 title=f"Competitor {i} Price Difference per Unit",
+                 labels={
+                     'x': 'Product Category',
+                     'y': f'Competitor {i}'
+                 })
+    fig.show()
+
+### Precio de flete
+
+df['fp1_diff'] = df['freight_price'] - df['fp1']
+df['fp2_diff'] = df['freight_price'] - df['fp2']
+df['fp3_diff'] = df['freight_price'] - df['fp3']
+
+for i in range(1,4):
+    comp = f"comp{i}_diff"
+    fig = px.bar(x=df['product_category_name'],
+                 y=df[comp],
+                 title=f"Competitor {i} Shipping Price Difference",
+                 labels={
+                     'x': 'Product Category',
+                     'y': f'Competitor {i}'
+                 })
+    fig.show()
+
+### Análisis de correlación con el precio unitario
+
+corrs = df.corr()['unit_price'].sort_values(ascending=False)
+fig = px.bar(x=corrs.keys(), y=corrs.values,
+             title='Correlation of Features with Unit Price',
+             labels={
+                 'x': 'Features',
+                 'y': 'Correlation'
+             })
+fig.show()
+
+### Análisis de ventas mensuales
+
+Este conjunto de datos incluye características que son de naturaleza **temporal**. Los atributos de cada producto (ventas, cantidad, etc.) se muestran a lo largo de varios meses. Por lo tanto, echamos un vistazo a estos datos agregados a lo largo del tiempo.
+
+monthly_df = df.groupby(by='month_year').agg({
+    'unit_price': 'mean', 'total_price': 'sum', 'freight_price': 'sum',
+    'qty': 'sum', 'weekday': 'sum', 'weekend': 'sum', 'customers': 'sum'
+}).reset_index()
+monthly_df['month_year'] = pd.to_datetime(monthly_df['month_year'], format='%d-%m-%Y')
+monthly_df = monthly_df.sort_values(by='month_year')
+
+monthly_df.head()
+
+fig = px.scatter(monthly_df,
+                 x='customers', y='total_price', trendline='ols',
+                 title='Total Price vs Number of Customers')
+fig.show()
+
+fig = px.scatter(monthly_df,
+             x='weekend', y='total_price', trendline='ols',
+             title='Weekly Analysis of Total Price')
+fig.show()
+
+fig = px.bar(monthly_df,
+             x='month_year', y='customers',
+             title='Customers per month')
+fig.show()
+
+# Feature Engineering
+
+### Creando un marco de datos agregado por productos
+
+Dado que los datos involucran productos recurrentes a lo largo de meses, creamos un marco de datos agregado para continuar con el problema. Esto se debe a que usaremos **Análisis de regresión**. Algunas de las funciones se eliminan según los resultados del análisis de correlación.
+* Funciones como precio_total, el número de clientes se agrega por su suma
+* Otros, como las diferencias entre competidores, la puntuación del producto y el precio unitario, se agregan según su media.
+
+cols_to_mean = ['product_id', 'month_year', 'comp1_diff', 'comp2_diff', 'comp3_diff',
+                'fp1_diff', 'fp2_diff', 'fp3_diff', 'product_score', 'unit_price']
+cols_to_sum = ['product_id', 'month_year', 'total_price', 'freight_price', 'customers']
+mean_df = df[cols_to_mean]
+sum_df = df[cols_to_sum]
+
+### Agregar los marcos de datos por separado según el tipo
+
+products_mean = mean_df.groupby(by='product_id').mean()
+products_sum = sum_df.groupby(by='product_id').sum()
+
+### Unir dataframes
+
+products = pd.concat([products_sum, products_mean],
+                     axis=1, join='inner').reset_index()
+products.head()
+
+### Features y Target
+
+X, y = products.drop(['product_id', 'unit_price'], axis=1), products['unit_price']
+
+# Model Building
+
+La optimización de los precios minoristas se puede abordar como un problema de regresión, donde el objetivo es predecir el precio óptimo para un producto determinado, en función de diversos factores, como las características del producto, los precios de la competencia y el comportamiento del cliente. **Regresión** es una técnica estadística utilizada para analizar la relación entre dos o más variables. Se utiliza comúnmente para predecir una variable dependiente en función de una o más variables independientes, modelando la relación entre ellas. La idea básica detrás de la regresión es encontrar la línea o curva que mejor se ajuste a los datos, de modo que podamos usarla para hacer predicciones para nuevos puntos de datos.
+
+
+model = RandomForestRegressor(n_estimators=50, random_state=40)
+model.fit(X, y)
+y_pred = model.predict(X)
+
+### Evaluación del modelo
+
+print(f"R2 score: {r2_score(y, y_pred)}")
+
+print(f"Mean Absolute Error: {mean_absolute_error(y, y_pred)}")
+
+### Visualización de resultados
+
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=y, y=y_pred, mode='markers', 
+                         marker=dict(color='blue'), 
+                         name='Predicted vs. Actual Retail Unit Price'))
+fig.add_trace(go.Scatter(x=[min(y), max(y)], y=[min(y), max(y)], 
+                         mode='lines', 
+                         marker=dict(color='red'), 
+                         name='Ideal Prediction'))
+fig.update_layout(
+    title='Predicted vs. Actual Retail Price',
+    xaxis_title='Actual Retail Price',
+    yaxis_title='Predicted Retail Price'
+)
+fig.show()
+
+# Conclusion
+El objetivo final de optimizar los precios minoristas es cobrar un precio que le ayude a ganar la mayor cantidad de dinero y atraiga suficientes clientes para comprar sus productos. Implica el uso de datos y estrategias de precios para encontrar el precio correcto que maximice sus ventas y ganancias mientras mantiene contentos a los clientes.
