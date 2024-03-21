@@ -1,0 +1,30 @@
+import numpy as np
+import pandas as pd
+from sklearn.datasets import load_iris
+from sklearn.feature_selection import SelectKBest
+from sklearn.feature_selection import chi2
+
+# Cargar datos de ejemplo (iris dataset)
+data = load_iris()
+X = data.data
+y = (data.target != 0) * 1  # Convertir a una variable dicotómica
+
+# Convertir los datos a un DataFrame de pandas para mayor comodidad
+df = pd.DataFrame(X, columns=data.feature_names)
+df['target'] = y
+
+# Aplicar el método de filtrado
+# Seleccionar las mejores 2 características utilizando chi-cuadrado
+selector = SelectKBest(score_func=chi2, k=2)
+X_new = selector.fit_transform(X, y)
+
+# Obtener las características seleccionadas
+selected_features = df.columns[selector.get_support(indices=True)].tolist()
+
+# Mostrar las características seleccionadas y sus puntuaciones
+feature_scores = pd.DataFrame({'Feature': df.columns[:-1], 'Score': selector.scores_})
+print("Puntuaciones de las características:")
+print(feature_scores)
+
+print("\nCaracterísticas seleccionadas:")
+print(selected_features)
